@@ -19,6 +19,7 @@ export WANDB_ENTITY=st7ma784
 export WANDB_PROJECT=iome
 export WANDB_MODE=online
 export PYTHONPATH=$IOME_DIR/src:${PYTHONPATH:-}
+PYTHON=$HOME/miniconda3/bin/python
 # Limit to 40 threads so the machine stays responsive
 export OMP_NUM_THREADS=4
 export MKL_NUM_THREADS=4
@@ -28,16 +29,16 @@ echo "[hdd01] ckpt: $CKPT_DIR"
 echo "[hdd01] log : $LOG_DIR/stage1-hdd01.log"
 
 # Run grid conversion first if still needed (local disk → fast)
-SD_SHAPE=$(python3 -c "import numpy as np; from pathlib import Path; f=next(Path('$CACHE/superdarn').glob('*_sd.npy'),None); print(np.load(f,mmap_mode='r').shape[1] if f else 0)" 2>/dev/null || echo 0)
+SD_SHAPE=$($PYTHON -c "import numpy as np; from pathlib import Path; f=next(Path('$CACHE/superdarn').glob('*_sd.npy'),None); print(np.load(f,mmap_mode='r').shape[1] if f else 0)" 2>/dev/null || echo 0)
 if [[ "$SD_SHAPE" == "120" ]]; then
     echo "[hdd01] Converting 120x120 → 180x360 (local disk) ..."
-    python3 "$IOME_DIR/scripts/convert_grid_120_to_180360.py" \
+    $PYTHON "$IOME_DIR/scripts/convert_grid_120_to_180360.py" \
         --cache_root "$CACHE" --workers 40 --no_backup \
         2>&1 | tee "$LOG_DIR/grid_convert_hdd01.log"
     echo "[hdd01] Conversion done."
 fi
 
-nohup python3 "$IOME_DIR/scripts/train_stage1.py" \
+nohup $PYTHON "$IOME_DIR/scripts/train_stage1.py" \
     --splits_dir  "$SPLITS"             \
     --cache_sd    "$CACHE/superdarn"    \
     --cache_smag  "$CACHE/supermag"     \
