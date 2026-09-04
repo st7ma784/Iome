@@ -50,6 +50,7 @@ python -c "import triton" 2>/dev/null \
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export WANDB_API_KEY=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
+export WANDB_ENTITY=st7ma784
 export WANDB_MODE=online
 export PYTHONPATH=$IOME_DIR/src:$PYTHONPATH
 

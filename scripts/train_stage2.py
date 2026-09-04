@@ -34,6 +34,7 @@ def parse_args():
     ap.add_argument("--ckpt_dir",    type=Path, required=True)
     # Training
     ap.add_argument("--wandb_project", default="iome")
+    ap.add_argument("--wandb_entity",  default="st7ma784")
     ap.add_argument("--batch_size",  type=int,   default=32)
     ap.add_argument("--max_steps",   type=int,   default=50_000)
     ap.add_argument("--num_workers", type=int,   default=16)
@@ -100,7 +101,7 @@ def main():
         p_mod_drop=args.p_mod_drop,
     )
 
-    logger  = WandbLogger(project=args.wandb_project, name="stage2")
+    logger  = WandbLogger(project=args.wandb_project, entity=args.wandb_entity, name="stage2")
     ckpt_cb = ModelCheckpoint(
         dirpath=str(args.ckpt_dir),
         filename="stage2-{step:06d}-{val/loss:.4f}",
