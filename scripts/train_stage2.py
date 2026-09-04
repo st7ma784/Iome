@@ -35,6 +35,9 @@ def parse_args():
     # Training
     ap.add_argument("--wandb_project", default="iome")
     ap.add_argument("--wandb_entity",  default="st7ma784")
+    ap.add_argument("--accelerator",   default="gpu", choices=["gpu","cpu"])
+    ap.add_argument("--devices",       type=int, default=1)
+    ap.add_argument("--precision",     default="bf16-mixed")
     ap.add_argument("--batch_size",  type=int,   default=32)
     ap.add_argument("--max_steps",   type=int,   default=50_000)
     ap.add_argument("--num_workers", type=int,   default=16)
@@ -110,7 +113,7 @@ def main():
     )
     trainer = pl.Trainer(
         max_steps=args.max_steps,
-        accelerator="gpu", devices=1, precision="bf16-mixed",
+        accelerator=args.accelerator, devices=args.devices, precision=args.precision,
         logger=logger, callbacks=[ckpt_cb, LearningRateMonitor("step")],
         val_check_interval=500, log_every_n_steps=50,
     )
