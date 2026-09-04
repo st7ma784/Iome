@@ -37,7 +37,7 @@ nohup conda run -n open-ce python "$IOME_DIR/scripts/train_stage1.py" \
     --max_steps   50000                 \
     --num_workers 8                     \
     --accelerator gpu                   \
-    --devices     3                     \
+    --devices     1                     \
     --precision   bf16-mixed            \
     --p_mod_drop  0.3                   \
     --wandb_project iome                \
