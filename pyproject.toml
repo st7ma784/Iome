@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "iome"
+version = "0.1.0"
+description = "Multi-modal ionospheric data fusion (SuperDARN + SuperMAG + TEC)"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.2",
+    "pytorch-lightning>=2.2",
+    "numpy>=1.26",
+    "minio>=7.2",
+    "pysmb>=1.2",
+    "matplotlib>=3.8",
+    "wandb>=0.17",
+    "umap-learn>=0.5",   # optional: latent UMAP plots
+]
+
+[project.optional-dependencies]
+aacgm = ["aacgmv2>=2.6"]     # proper geographic → magnetic coordinate conversion
+ionex = ["georinex>=1.16"]   # robust IONEX parser (fallback: built-in mini-parser)
+
+[tool.setuptools.packages.find]
+where = ["src"]

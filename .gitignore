@@ -1,0 +1,15 @@
+
+Earthdata.netrc
+*.netrc
+wandb/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.npy
+*.json
+*.log
+paper/
