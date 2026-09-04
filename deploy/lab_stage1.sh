@@ -36,6 +36,16 @@ if [[ ! -f "$SPLITS/ts_avail.json" ]]; then
     echo "[lab] splits regenerated."
 fi
 
+# Check if grid conversion is still needed (any 120x120 files remaining)
+SD_SHAPE=$(conda run -n open-ce python -c "import numpy as np; from pathlib import Path; f=next(Path('$CACHE/superdarn').glob('*_sd.npy'),None); print(np.load(f,mmap_mode='r').shape[1] if f else 0)" 2>/dev/null || echo 0)
+if [[ "$SD_SHAPE" == "120" ]]; then
+    echo "[lab] Legacy 120x120 data detected — running grid conversion first..."
+    conda run -n open-ce python "$IOME_DIR/scripts/convert_grid_120_to_180360.py" \
+        --cache_root "$CACHE" --workers 12 --no_backup \
+        2>&1 | tee "$LOG_DIR/grid_convert.log"
+    echo "[lab] Grid conversion done."
+fi
+
 nohup conda run -n open-ce python "$IOME_DIR/scripts/train_stage1.py" \
     --splits_dir  "$SPLITS"             \
     --cache_sd    "$CACHE/superdarn"    \
