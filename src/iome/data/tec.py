@@ -208,8 +208,13 @@ class TECDataset(Dataset):
         if self.cache_dir:
             p = self.cache_dir / fname
             if p.exists():
-                grid = np.load(p, mmap_mode="r")
-                return self._normalise(grid)
+                try:
+                    grid = np.load(p, mmap_mode="r")
+                    if grid.shape != (2, NLAT, NMLT):
+                        raise ValueError(f"unexpected shape {grid.shape}")
+                    return self._normalise(grid)
+                except Exception:
+                    return torch.zeros(2, NLAT, NMLT)
 
         raw  = get_minio_bytes(**self.minio_cfg, obj_name=fname)
         grid = np.load(io.BytesIO(raw))

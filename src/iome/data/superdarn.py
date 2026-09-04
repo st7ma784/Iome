@@ -69,7 +69,12 @@ class SuperDARNDataset(Dataset):
         if self.cache_dir is not None:
             path = self.cache_dir / fname
             if path.exists():
-                grid = np.load(path, mmap_mode="r")
+                try:
+                    grid = np.load(path, mmap_mode="r")
+                    if grid.shape != (N_CHANS, NLAT, NMLT):
+                        raise ValueError(f"unexpected shape {grid.shape}")
+                except Exception:
+                    grid = np.zeros((N_CHANS, NLAT, NMLT), dtype=np.float32)
             else:
                 grid = np.zeros((N_CHANS, NLAT, NMLT), dtype=np.float32)
         else:
