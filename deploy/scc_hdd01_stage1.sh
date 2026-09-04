@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-CACHE=/data5/iome_cache
+CACHE=/data/iome_cache
 SPLITS=$CACHE/splits
 IOME_DIR="$HOME/iome"
 LOG_DIR=$CACHE/train_logs
