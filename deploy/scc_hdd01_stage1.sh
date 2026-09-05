@@ -55,9 +55,9 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --ckpt_dir    "$CKPT_DIR"           \
     --omni_dir    "$CACHE/omni"         \
     --stats_dir   "$SPLITS"             \
-    --batch_size  4                     \
+    --batch_size  1                     \
     --max_steps   50000                 \
-    --num_workers 4                     \
+    --num_workers 2                     \
     --accelerator cpu                   \
     --devices     1                     \
     --precision   32                    \
@@ -67,6 +67,6 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     > "$LOG_DIR/stage1-hdd01.log" 2>&1 &
 
 PID=$!
-echo "[hdd01] PID $PID  (batch=4, workers=4, OMP=60)"
+echo "[hdd01] PID $PID  (batch=1, workers=2, OMP=60)"
 echo "$PID" > "$LOG_DIR/stage1-hdd01.pid"
 echo "[hdd01] log: $LOG_DIR/stage1-hdd01.log"
