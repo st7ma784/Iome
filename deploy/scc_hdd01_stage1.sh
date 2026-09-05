@@ -23,9 +23,11 @@ export PYTHONPATH=$IOME_DIR/src:${PYTHONPATH:-}
 export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=""
 PYTHON=$HOME/miniconda3/bin/python
-# Each run gets 4 OMP/MKL threads; 2 runs × 4 = 8 + 80 data workers leaves room
-export OMP_NUM_THREADS=4
-export MKL_NUM_THREADS=4
+# 80 cores: 2 runs × 30 OMP threads = 60 compute + 8 data workers + OS headroom.
+# Keep num_workers low (4 each) to avoid /dev/shm exhaustion —
+# each worker holds ~83MB/sample × prefetch_factor=2 in shm.
+export OMP_NUM_THREADS=30
+export MKL_NUM_THREADS=30
 
 echo "[hdd01] $(hostname) — dual CPU stage-1"
 
@@ -59,7 +61,7 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --stats_dir   "$SPLITS"             \
     --batch_size  32                    \
     --max_steps   50000                 \
-    --num_workers 40                    \
+    --num_workers 4                     \
     --accelerator cpu                   \
     --devices     1                     \
     --precision   32                    \
@@ -85,7 +87,7 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --stats_dir   "$SPLITS"             \
     --batch_size  16                    \
     --max_steps   50000                 \
-    --num_workers 20                    \
+    --num_workers 4                     \
     --accelerator cpu                   \
     --devices     1                     \
     --precision   32                    \
