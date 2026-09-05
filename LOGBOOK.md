@@ -90,6 +90,19 @@ Both runs include post-fix code: corrected InfoNCE, grad clip=1.0, BCE occ, NaN 
 
 ---
 
+## 2026-09-05 — LR logging as 0
+
+### Symptom
+`train/lr` shows 0 throughout warmup.
+
+### Root cause
+`configure_optimizers` created a `LambdaLR` warmup scheduler but never returned it — only `CosineAnnealingLR` was passed to Lightning. The warmup was silently discarded. CosineAnnealingLR was the active scheduler from step 0, meaning LR started at the peak (3e-4) and immediately decayed — no warmup at all. Additionally `lr_lambda(0) = 0/500 = 0`, so whatever logged LR=0 was reading the discarded scheduler's state.
+
+### Fix
+`SequentialLR([LinearLR(1e-3→1.0, 500 steps), CosineAnnealingLR(→1e-6)])`. LR ramps from 3e-7 at step 0 to 3e-4 at step 500, then cosine-decays to 1e-6 at step 50k.
+
+---
+
 ## Outstanding / watch list
 
 - [ ] Confirm NaN-free training for ≥ 500 steps on both machines
