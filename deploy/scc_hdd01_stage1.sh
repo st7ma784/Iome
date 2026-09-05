@@ -1,8 +1,7 @@
 #!/bin/bash
 # Stage 1 on scc-hdd-01 — 80-core CPU, /data is local disk.
-# Runs two parallel jobs to saturate all 80 cores:
-#   Run A: batch=32, 40 workers, p_drop=0.3, tau=0.10  (main)
-#   Run B: batch=16, 20 workers, p_drop=0.5, tau=0.07  (probe)
+# 146M param model on 180×360 grids uses ~10-12GB activation memory during
+# backprop, so only ONE run fits in 30GB RAM. Use all 60 OMP threads for compute.
 
 set -euo pipefail
 
@@ -10,10 +9,9 @@ CACHE=/data/iome_cache
 SPLITS=$CACHE/splits
 IOME_DIR="$HOME/iome"
 LOG_DIR=$CACHE/train_logs
-CKPT_A=$CACHE/ckpts/stage1-hdd01a
-CKPT_B=$CACHE/ckpts/stage1-hdd01b
+CKPT_DIR=$CACHE/ckpts/stage1-hdd01
 
-mkdir -p "$LOG_DIR" "$CKPT_A" "$CKPT_B"
+mkdir -p "$LOG_DIR" "$CKPT_DIR"
 
 export WANDB_API_KEY=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
 export WANDB_ENTITY=st7ma784
@@ -23,16 +21,14 @@ export PYTHONPATH=$IOME_DIR/src:${PYTHONPATH:-}
 export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=""
 PYTHON=$HOME/miniconda3/bin/python
-# 80 cores: 2 runs × 30 OMP threads = 60 compute + 8 data workers + OS headroom.
-# Keep num_workers low (4 each) to avoid /dev/shm exhaustion —
-# each worker holds ~83MB/sample × prefetch_factor=2 in shm.
-export OMP_NUM_THREADS=30
-export MKL_NUM_THREADS=30
+# One run: 60 OMP threads for dense matrix ops, 4 data workers, leftover for OS
+export OMP_NUM_THREADS=60
+export MKL_NUM_THREADS=60
 
-echo "[hdd01] $(hostname) — dual CPU stage-1"
+echo "[hdd01] $(hostname) — single CPU stage-1 (60 OMP threads)"
 
 # ------------------------------------------------------------------
-# Run grid conversion first if still needed (local disk → fast)
+# Grid conversion check
 # ------------------------------------------------------------------
 SD_SHAPE=$($PYTHON -c "
 import numpy as np; from pathlib import Path
@@ -40,7 +36,7 @@ f = next(Path('$CACHE/superdarn').glob('*_sd.npy'), None)
 print(np.load(f, mmap_mode='r').shape[1] if f else 0)
 " 2>/dev/null || echo 0)
 if [[ "$SD_SHAPE" == "120" ]]; then
-    echo "[hdd01] Converting 120×120 → 180×360 (local disk) ..."
+    echo "[hdd01] Converting 120×120 → 180×360 ..."
     $PYTHON "$IOME_DIR/scripts/convert_grid_120_to_180360.py" \
         --cache_root "$CACHE" --workers 40 --no_backup \
         2>&1 | tee "$LOG_DIR/grid_convert_hdd01.log"
@@ -48,7 +44,7 @@ if [[ "$SD_SHAPE" == "120" ]]; then
 fi
 
 # ------------------------------------------------------------------
-# Run A — main hyperparameters (40 data workers)
+# Single training run
 # ------------------------------------------------------------------
 nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --splits_dir  "$SPLITS"             \
@@ -56,10 +52,10 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --cache_smag  "$CACHE/supermag"     \
     --cache_tec   "$CACHE/tec"          \
     --cache_dmsp  "$CACHE/dmsp"         \
-    --ckpt_dir    "$CKPT_A"             \
+    --ckpt_dir    "$CKPT_DIR"           \
     --omni_dir    "$CACHE/omni"         \
     --stats_dir   "$SPLITS"             \
-    --batch_size  8                     \
+    --batch_size  4                     \
     --max_steps   50000                 \
     --num_workers 4                     \
     --accelerator cpu                   \
@@ -67,37 +63,10 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --precision   32                    \
     --p_mod_drop  0.3                   \
     --wandb_project iome                \
-    --wandb_name  hdd01a-drop0.3-tau0.1 \
-    > "$LOG_DIR/stage1-hdd01a.log" 2>&1 &
-PID_A=$!
-echo "[hdd01] Run A PID $PID_A  (batch=8, workers=4, OMP=30, drop=0.3, tau=0.10)"
-echo "$PID_A" > "$LOG_DIR/stage1-hdd01a.pid"
+    --wandb_name  hdd01-drop0.3-tau0.1  \
+    > "$LOG_DIR/stage1-hdd01.log" 2>&1 &
 
-# ------------------------------------------------------------------
-# Run B — higher dropout, lower temperature (20 data workers)
-# ------------------------------------------------------------------
-nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
-    --splits_dir  "$SPLITS"             \
-    --cache_sd    "$CACHE/superdarn"    \
-    --cache_smag  "$CACHE/supermag"     \
-    --cache_tec   "$CACHE/tec"          \
-    --cache_dmsp  "$CACHE/dmsp"         \
-    --ckpt_dir    "$CKPT_B"             \
-    --omni_dir    "$CACHE/omni"         \
-    --stats_dir   "$SPLITS"             \
-    --batch_size  16                    \
-    --max_steps   50000                 \
-    --num_workers 4                     \
-    --accelerator cpu                   \
-    --devices     1                     \
-    --precision   32                    \
-    --p_mod_drop  0.5                   \
-    --tau         0.07                  \
-    --wandb_project iome                \
-    --wandb_name  hdd01b-drop0.5-tau0.07 \
-    > "$LOG_DIR/stage1-hdd01b.log" 2>&1 &
-PID_B=$!
-echo "[hdd01] Run B PID $PID_B  (batch=16, workers=4, OMP=30, drop=0.5, tau=0.07)"
-echo "$PID_B" > "$LOG_DIR/stage1-hdd01b.pid"
-
-echo "[hdd01] logs: $LOG_DIR/stage1-hdd01{a,b}.log"
+PID=$!
+echo "[hdd01] PID $PID  (batch=4, workers=4, OMP=60)"
+echo "$PID" > "$LOG_DIR/stage1-hdd01.pid"
+echo "[hdd01] log: $LOG_DIR/stage1-hdd01.log"
