@@ -17,7 +17,7 @@ export WANDB_API_KEY=wandb_v1_9CznU47qoHhZrxA1jiMnTasd3XM_DDxM4AyJnGpU3RKeC96yb0
 export WANDB_ENTITY=st7ma784
 export WANDB_PROJECT=iome
 export WANDB_MODE=online
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_VISIBLE_DEVICES=""
 export PYTHONPATH=$IOME_DIR/src:${PYTHONPATH:-}
 
 echo "[ws02] $(hostname) — 3× P100"
@@ -33,12 +33,12 @@ nohup conda run -n open-ce python "$IOME_DIR/scripts/train_stage1.py" \
     --ckpt_dir    "$CKPT_DIR"           \
     --omni_dir    "$CACHE/omni"         \
     --stats_dir   "$SPLITS"             \
-    --batch_size  24                    \
+    --batch_size  4                     \
     --max_steps   50000                 \
-    --num_workers 8                     \
-    --accelerator gpu                   \
+    --num_workers 4                     \
+    --accelerator cpu                   \
     --devices     1                     \
-    --precision   bf16-mixed            \
+    --precision   32                    \
     --p_mod_drop  0.3                   \
     --wandb_project iome                \
     > "$LOG_DIR/stage1-ws02.log" 2>&1 &
