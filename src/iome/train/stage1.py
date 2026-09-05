@@ -15,7 +15,7 @@ need to reconstruct from partial sensor sets.
 import torch
 import pytorch_lightning as pl
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from ..models.fusion import UnifiedIonosphereModel
 from ..models.losses import stage1_loss, per_modality_recon_losses
@@ -110,18 +110,10 @@ class Stage1ContrastiveModule(pl.LightningModule):
             lr=self.hparams.lr,
             weight_decay=self.hparams.weight_decay,
         )
-        scheduler = CosineAnnealingLR(opt, T_max=self.max_steps - self.warmup_steps)
-
-        def lr_lambda(step):
-            if step < self.warmup_steps:
-                return step / max(1, self.warmup_steps)
-            return 1.0
-
-        warmup = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+        warmup = LinearLR(opt, start_factor=1e-3, end_factor=1.0, total_iters=self.warmup_steps)
+        cosine = CosineAnnealingLR(opt, T_max=self.max_steps - self.warmup_steps, eta_min=1e-6)
+        scheduler = SequentialLR(opt, schedulers=[warmup, cosine], milestones=[self.warmup_steps])
         return {
             "optimizer": opt,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-            },
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
