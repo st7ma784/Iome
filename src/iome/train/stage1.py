@@ -85,9 +85,8 @@ class Stage1ContrastiveModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         losses = self._step(batch, p_drop=self.p_mod_drop)
-        self.log_dict({"train/" + k: v for k, v in losses.items()}, prog_bar=False)
         self.log("train/loss", losses["loss"], prog_bar=True)
-        # Gradient norm (log before optimizer step via on_before_optimizer_step hook)
+        self.log_dict({"train/" + k: v for k, v in losses.items() if k != "loss"}, prog_bar=False)
         return losses["loss"]
 
     def on_before_optimizer_step(self, optimizer):
