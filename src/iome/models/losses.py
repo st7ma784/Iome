@@ -30,39 +30,36 @@ def infonce_loss(
     """
     Multi-view temporal InfoNCE loss.
 
-    Positives: different encoder views of the SAME timestep (z_views[i] vs z_shared).
-    Negatives: shared latents from DIFFERENT timesteps in the batch.
+    For each (view, timestep) pair, treats (z_view_b, z_shared_b) as the single
+    positive and all other timesteps' z_shared as negatives.  Averaging over V
+    views and B timesteps.
 
-    This enforces two properties simultaneously:
-      1. Cross-view agreement at the same time (different modalities → same z).
-      2. Temporal discriminability (z_t ≠ z_{t'} for t ≠ t').
+    Positives: per-modality encoding vs the fused shared latent at same t.
+    Negatives: fused shared latents from DIFFERENT timesteps in the batch.
 
     Args:
-        z_shared: (B, D) mean-fused latent per timestep in the batch
+        z_shared: (B, D) mean-fused latent
         z_views:  list of V tensors (B, D), one per available modality encoder
-        tau:      InfoNCE temperature (0.07–0.2; lower = harder negatives)
+        tau:      InfoNCE temperature
 
     Returns:
-        scalar loss
+        scalar loss (≥ 0 by construction)
     """
-    B = z_shared.shape[0]
-    z_norm = F.normalize(z_shared, dim=1)                        # (B, D)
-
-    # Cross-time similarity matrix — denominator candidates
-    sim_matrix = z_norm @ z_norm.T / tau                         # (B, B)
-
-    # Positive similarities: each per-view encoding vs the shared latent at same t
     if not z_views:
         return z_shared.new_tensor(0.0)
 
-    z_views_norm = [F.normalize(z, dim=1) for z in z_views]
-    stacked = torch.stack(z_views_norm, dim=0)                   # (V, B, D)
-    sim_pos = torch.einsum("bd,vbd->vb", z_norm, stacked) / tau  # (V, B)
+    B = z_shared.shape[0]
+    z_norm = F.normalize(z_shared, dim=1)                         # (B, D)
+    log_denom = torch.logsumexp(z_norm @ z_norm.T / tau, dim=1)  # (B,)  stable
 
-    # InfoNCE: sum positive scores / sum all scores
-    numerator   = torch.exp(sim_pos).sum(dim=0)                  # (B,)
-    denominator = torch.exp(sim_matrix).sum(dim=1)               # (B,)
-    return (-torch.log(numerator / denominator.clamp(min=1e-8))).mean()
+    total = z_shared.new_tensor(0.0)
+    for z_v in z_views:
+        z_v_norm = F.normalize(z_v, dim=1)                        # (B, D)
+        sim_pos  = (z_v_norm * z_norm).sum(dim=1) / tau           # (B,)  one positive per row
+        # loss_b = log_denom - sim_pos  (always ≥ 0 when denom includes the positive)
+        total = total + (log_denom - sim_pos).mean()
+
+    return total / len(z_views)
 
 
 # ---------------------------------------------------------------------------
@@ -75,31 +72,43 @@ def reconstruction_loss(
     occ_channel: Optional[int] = None,
 ) -> torch.Tensor:
     """
-    Weighted Smooth-L1 reconstruction loss with optional occupancy masking.
+    Reconstruction loss: Smooth-L1 on physics channels, BCE on occupancy channel.
 
-    For SuperDARN, channels 0-1 (obs velocity) are only supervised in
-    radar-covered cells (soft_occ > 0.05).  Channels 2-5 are always supervised.
+    Occupancy (soft_occ) is a soft binary mask ∈ [0,1] — BCE is the principled
+    loss for it and avoids the scaling issues that smooth_l1 has near zero.
 
-    For SuperMAG and TEC, occ_channel=None → full-grid supervision.
+    For SuperDARN / SuperMAG / DMSP: observed-velocity channels are only
+    supervised where the occupancy mask indicates coverage.
 
     Args:
         y_hat:        (B, C, H, W) predicted grid
-        y:            (B, C, H, W) target grid
-        occ_channel:  index of the soft-occupancy channel (None = no masking)
+        y:            (B, C, H, W) target grid (normalised)
+        occ_channel:  index of the soft-occupancy channel (None = no masking or occ)
 
     Returns:
         scalar loss
     """
-    err = F.smooth_l1_loss(y_hat, y, reduction="none", beta=0.1)  # (B, C, H, W)
+    if occ_channel is None:
+        return F.smooth_l1_loss(y_hat, y, reduction="mean", beta=0.1)
 
-    if occ_channel is not None:
-        occ = (y[:, occ_channel : occ_channel + 1] > 0.05).float()  # (B, 1, H, W)
-        # Observed channels get the occupancy mask; physics/background channels don't
-        mask = torch.ones_like(err)
-        mask[:, :2] = occ.expand_as(mask[:, :2])
-        return (err * mask).sum() / mask.sum().clamp(min=1.0)
+    occ_target = y[:, occ_channel : occ_channel + 1]                 # (B,1,H,W) ∈ [0,1]
+    obs_mask   = (occ_target > 0.05).float()                          # where radar/mag saw data
 
-    return err.mean()
+    # Physics channels — smooth_l1, only in observed cells
+    phys_idx = [i for i in range(y.shape[1]) if i != occ_channel]
+    y_phys   = y[:, phys_idx]                                         # (B, C-1, H, W)
+    yh_phys  = y_hat[:, phys_idx]
+    err      = F.smooth_l1_loss(yh_phys, y_phys, reduction="none", beta=0.1)
+    # obs_mask supervision only on first 2 observed channels; rest always supervised
+    mask         = torch.ones_like(err)
+    mask[:, :2]  = obs_mask.expand_as(mask[:, :2])
+    phys_loss    = (err * mask).sum() / mask.sum().clamp(min=1.0)
+
+    # Occupancy channel — BCE (target already in [0,1], clamp prediction to logit range)
+    occ_hat  = y_hat[:, occ_channel : occ_channel + 1]
+    occ_loss = F.binary_cross_entropy_with_logits(occ_hat, occ_target.clamp(0, 1))
+
+    return phys_loss + occ_loss
 
 
 def multi_modal_recon_loss(

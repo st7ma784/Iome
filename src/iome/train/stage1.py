@@ -85,12 +85,17 @@ class Stage1ContrastiveModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         losses = self._step(batch, p_drop=self.p_mod_drop)
-        self.log("train/loss", losses["loss"], prog_bar=True)
+        loss = losses["loss"]
+        if not torch.isfinite(loss):
+            self.log("train/nan_skipped", 1.0, prog_bar=False)
+            return None  # skip this batch; Lightning will not call optimizer.step()
+        self.log("train/loss", loss, prog_bar=True)
         self.log_dict({"train/" + k: v for k, v in losses.items() if k != "loss"}, prog_bar=False)
-        return losses["loss"]
+        return loss
 
     def on_before_optimizer_step(self, optimizer):
-        total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=float("inf"))
+        # clip_grad_norm_ returns the pre-clip norm — log it for monitoring
+        total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
         self.log("train/grad_norm", total_norm, prog_bar=False)
 
     def validation_step(self, batch, batch_idx):
