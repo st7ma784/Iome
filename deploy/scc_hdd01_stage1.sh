@@ -70,7 +70,7 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --wandb_name  hdd01a-drop0.3-tau0.1 \
     > "$LOG_DIR/stage1-hdd01a.log" 2>&1 &
 PID_A=$!
-echo "[hdd01] Run A PID $PID_A  (batch=32, workers=40, drop=0.3, tau=0.10)"
+echo "[hdd01] Run A PID $PID_A  (batch=32, workers=4, OMP=30, drop=0.3, tau=0.10)"
 echo "$PID_A" > "$LOG_DIR/stage1-hdd01a.pid"
 
 # ------------------------------------------------------------------
@@ -97,7 +97,7 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --wandb_name  hdd01b-drop0.5-tau0.07 \
     > "$LOG_DIR/stage1-hdd01b.log" 2>&1 &
 PID_B=$!
-echo "[hdd01] Run B PID $PID_B  (batch=16, workers=20, drop=0.5, tau=0.07)"
+echo "[hdd01] Run B PID $PID_B  (batch=16, workers=4, OMP=30, drop=0.5, tau=0.07)"
 echo "$PID_B" > "$LOG_DIR/stage1-hdd01b.pid"
 
 echo "[hdd01] logs: $LOG_DIR/stage1-hdd01{a,b}.log"
