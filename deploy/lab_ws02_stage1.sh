@@ -18,13 +18,14 @@ export WANDB_ENTITY=st7ma784
 export WANDB_PROJECT=iome
 export WANDB_MODE=online
 export CUDA_VISIBLE_DEVICES=""
+export PYTHONUNBUFFERED=1
 export PYTHONPATH=$IOME_DIR/src:${PYTHONPATH:-}
 
 echo "[ws02] $(hostname) — 3× P100"
 echo "[ws02] ckpt: $CKPT_DIR"
 echo "[ws02] log : $LOG_DIR/stage1-ws02.log"
 
-nohup conda run -n open-ce python "$IOME_DIR/scripts/train_stage1.py" \
+nohup conda run -n open-ce python -u "$IOME_DIR/scripts/train_stage1.py" \
     --splits_dir  "$SPLITS"             \
     --cache_sd    "$CACHE/superdarn"    \
     --cache_smag  "$CACHE/supermag"     \

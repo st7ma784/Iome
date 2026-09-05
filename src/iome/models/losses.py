@@ -120,6 +120,18 @@ def multi_modal_recon_loss(
     return total if total is not None else torch.tensor(0.0)
 
 
+def per_modality_recon_losses(
+    y_hats: Dict[str, torch.Tensor],
+    ys: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    """Per-modality (unweighted) reconstruction losses for logging."""
+    OCC = {"sd": 4, "smag": 2, "dmsp": 4}
+    return {
+        k: reconstruction_loss(y_hats[k], ys[k], OCC.get(k))
+        for k in MODALITIES if k in y_hats and k in ys
+    }
+
+
 # ---------------------------------------------------------------------------
 # Dynamics loss
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from ..models.fusion import UnifiedIonosphereModel
-from ..models.losses import stage1_loss
+from ..models.losses import stage1_loss, per_modality_recon_losses
 
 
 class Stage1ContrastiveModule(pl.LightningModule):
@@ -68,7 +68,7 @@ class Stage1ContrastiveModule(pl.LightningModule):
         # decode_mods: ALL mods in ys — includes any that are dropped from encoding
         decode_mods = tuple(ys.keys())
         out = self.model(xs, u, omni_mask, decode_mods=decode_mods, p_mod_drop=p_drop)
-        return stage1_loss(
+        losses = stage1_loss(
             z_shared=out["z_shared"],
             z_views=list(out["z_views"].values()),
             y_hats=out["y_hats"],
@@ -76,11 +76,23 @@ class Stage1ContrastiveModule(pl.LightningModule):
             tau=self.tau,
             lambda_recon=self.lambda_recon,
         )
+        # Per-modality breakdown
+        per_mod = per_modality_recon_losses(out["y_hats"], ys)
+        losses.update({f"recon_{k}": v for k, v in per_mod.items()})
+        # How many modalities were presented to encoders (after dropout)
+        losses["n_enc_mods"] = torch.tensor(float(len(out["z_views"])))
+        return losses
 
     def training_step(self, batch, batch_idx):
         losses = self._step(batch, p_drop=self.p_mod_drop)
-        self.log_dict({"train/" + k: v for k, v in losses.items()}, prog_bar=True)
+        self.log_dict({"train/" + k: v for k, v in losses.items()}, prog_bar=False)
+        self.log("train/loss", losses["loss"], prog_bar=True)
+        # Gradient norm (log before optimizer step via on_before_optimizer_step hook)
         return losses["loss"]
+
+    def on_before_optimizer_step(self, optimizer):
+        total_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=float("inf"))
+        self.log("train/grad_norm", total_norm, prog_bar=False)
 
     def validation_step(self, batch, batch_idx):
         losses = self._step(batch, p_drop=0.0)

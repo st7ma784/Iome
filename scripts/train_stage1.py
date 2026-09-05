@@ -50,6 +50,7 @@ def parse_args():
     # Training
     ap.add_argument("--wandb_project", default="iome")
     ap.add_argument("--wandb_entity",  default="st7ma784")
+    ap.add_argument("--wandb_name",    default="stage1")
     ap.add_argument("--accelerator",   default="gpu", choices=["gpu","cpu"])
     ap.add_argument("--devices",       type=int, default=1)
     ap.add_argument("--precision",     default="bf16-mixed")
@@ -121,7 +122,7 @@ def main():
         p_mod_drop=args.p_mod_drop,
     )
 
-    logger  = WandbLogger(project=args.wandb_project, entity=args.wandb_entity, name="stage1")
+    logger  = WandbLogger(project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name)
     ckpt_cb = ModelCheckpoint(
         dirpath=str(args.ckpt_dir),
         filename="stage1-{step:06d}-{val/loss:.4f}",
