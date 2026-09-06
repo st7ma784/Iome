@@ -81,6 +81,7 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --wandb_name  hdd01-drop0.3-tau0.1  \
     $STAGE0_ARGS                        \
     $LAG_ARGS                           \
+    --align_window_steps 8              \
     > "$LOG_DIR/stage1-hdd01.log" 2>&1 &
 
 PID=$!
