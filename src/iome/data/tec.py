@@ -226,4 +226,6 @@ class TECDataset(Dataset):
             mean = self.stats["mean"][:, None, None]
             std  = self.stats["std"][:, None, None]
             grid = (grid - mean) / std.clip(min=1e-6)
+        # Fill NaN (missing GPS coverage) with 0 after normalisation
+        np.nan_to_num(grid, nan=0.0, copy=False)
         return torch.from_numpy(grid)

@@ -31,9 +31,10 @@ echo "[hdd01-stage0] Starting parallel per-modality pretraining (4 × 20 OMP thr
 
 PIDS=()
 for MOD in sd smag tec dmsp; do
-    CACHE_MOD=$CACHE/$( [[ "$MOD" == "smag" ]] && echo "supermag" \
-                      || [[ "$MOD" == "sd"   ]] && echo "superdarn" \
-                      || echo "$MOD" )
+    if   [[ "$MOD" == "smag" ]]; then CACHE_MOD=$CACHE/supermag
+    elif [[ "$MOD" == "sd"   ]]; then CACHE_MOD=$CACHE/superdarn
+    else                               CACHE_MOD=$CACHE/$MOD
+    fi
     echo "[hdd01-stage0] Launching $MOD → $LOG_DIR/stage0-$MOD.log"
     OMP_NUM_THREADS=20 MKL_NUM_THREADS=20 \
     $PYTHON -u "$IOME_DIR/scripts/train_stage0.py" \

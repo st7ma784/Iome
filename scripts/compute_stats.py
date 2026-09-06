@@ -111,6 +111,7 @@ def main():
         ("sd",   args.cache_root / "superdarn", "*_sd.npy",   6),
         ("smag", args.cache_root / "supermag",  "*_smag.npy", 3),
         ("tec",  args.cache_root / "tec",       "*_tec.npy",  2),
+        ("dmsp", args.cache_root / "dmsp",      "*_dmsp.npy", 5),
     ]
 
     for name, directory, pattern, n_chans in modalities:
