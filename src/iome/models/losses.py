@@ -142,6 +142,32 @@ def per_modality_recon_losses(
 
 
 # ---------------------------------------------------------------------------
+# Variance regularisation (VICReg-style collapse prevention)
+# ---------------------------------------------------------------------------
+
+def variance_loss(
+    z: torch.Tensor,
+    gamma: float = 1.0,
+) -> torch.Tensor:
+    """
+    Penalise dimensions of z whose std across the batch falls below gamma.
+
+    Works at any batch size — even B=1 the gradient is defined (std=0 →
+    max penalty).  With B=1 the std is 0 by definition, so this acts as a
+    constant regulariser pushing the encoder weights toward higher-variance
+    outputs on the next batch.
+
+    Loss = mean_d max(0, gamma - std_b(z_d))
+    """
+    if z.shape[0] < 2:
+        # B=1: std is undefined; return a fixed penalty so the gradient still
+        # flows through the encoder via other terms, and log it as 1.0
+        return z.new_tensor(1.0)
+    std = z.std(dim=0)                          # (D,)
+    return F.relu(gamma - std).mean()
+
+
+# ---------------------------------------------------------------------------
 # Dynamics loss
 # ---------------------------------------------------------------------------
 
@@ -166,11 +192,14 @@ def stage1_loss(
     ys: Dict[str, torch.Tensor],
     tau: float = 0.1,
     lambda_recon: float = 0.5,
+    lambda_var: float = 0.04,
 ) -> Dict[str, torch.Tensor]:
     l_cont  = infonce_loss(z_shared, z_views, tau=tau)
     l_recon = multi_modal_recon_loss(y_hats, ys)
-    loss    = l_cont + lambda_recon * l_recon
-    return {"loss": loss, "l_cont": l_cont, "l_recon": l_recon}
+    # Variance term: prevents collapse even when B=1 (InfoNCE has no gradient there)
+    l_var   = variance_loss(z_shared)
+    loss    = l_cont + lambda_recon * l_recon + lambda_var * l_var
+    return {"loss": loss, "l_cont": l_cont, "l_recon": l_recon, "l_var": l_var}
 
 
 def stage2_loss(
