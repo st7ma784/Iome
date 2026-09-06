@@ -81,10 +81,16 @@ class QuadModalDataset(Dataset):
     Joins up to four per-modality datasets on shared timestamps.
     Each sample returns only the modalities that have data at that timestamp.
 
-    If lag_offsets is provided (e.g. {"smag": 0, "sd": 8, "tec": 5}), each
-    modality in xs_aligned is loaded at t + lag_offsets[mod] rather than t.
-    This aligns modalities on the same causal "moment" (smag substorm onset
-    at t, sd convection response at t+8, etc.) for lag-corrected cross-modal CLIP.
+    Two lag-correction modes (mutually exclusive, lag_offsets takes priority):
+
+    lag_offsets — fixed lag per modality, from analyse_lag.py.  Each modality
+        in xs_aligned is loaded at t + lag_offsets[mod].  Fast: no extra IO.
+
+    align_window_steps — dynamic soft attention lag.  Returns xs_window[mod]
+        as a (K, C, H, W) tensor of K snapshots at t, t+1, ..., t+K-1.
+        Stage1 encodes this window and attends over it with TemporalAlignmentHead.
+        K = align_window_steps.  This path is more expensive but allows the lag
+        to vary per sample based on magnetospheric state.
     """
 
     def __init__(
@@ -97,8 +103,9 @@ class QuadModalDataset(Dataset):
         dmsp_dataset: Optional[DMSPDataset]      = None,
         u:            Optional[np.ndarray] = None,
         omni_mask:    Optional[np.ndarray] = None,
-        delta_t_steps: int = 1,
-        lag_offsets:   Optional[Dict[str, int]] = None,
+        delta_t_steps:      int = 1,
+        lag_offsets:        Optional[Dict[str, int]] = None,
+        align_window_steps: int = 0,
     ):
         self._ts    = timestamps
         self._avail = avail_map
@@ -108,13 +115,17 @@ class QuadModalDataset(Dataset):
             "tec":  tec_dataset,
             "dmsp": dmsp_dataset,
         }
-        self._u         = u
-        self._omni_mask = omni_mask
-        self._delta     = delta_t_steps
-        self._lag       = lag_offsets or {}
+        self._u              = u
+        self._omni_mask      = omni_mask
+        self._delta          = delta_t_steps
+        self._lag            = lag_offsets or {}
+        self._window_steps   = align_window_steps  # K; 0 = disabled
 
-        # Trim valid range to avoid out-of-bounds for both xs_next and xs_aligned
-        all_offsets = list(self._lag.values()) + [delta_t_steps]
+        # Trim valid range to avoid index overflow for any loaded offset
+        fixed_offsets = list(self._lag.values()) if self._lag else []
+        all_offsets   = fixed_offsets + [delta_t_steps]
+        if align_window_steps > 0:
+            all_offsets.append(align_window_steps - 1)
         min_off = min(0, min(all_offsets))
         max_off = max(all_offsets)
         self._valid = list(range(-min_off, len(timestamps) - max_off))
@@ -128,7 +139,7 @@ class QuadModalDataset(Dataset):
         avail = set(self._avail.get(ts, list(self._dsets.keys())))
 
         sample = {"xs": {}, "ys": {}, "xs_next": {}, "ys_next": {},
-                  "xs_aligned": {},
+                  "xs_aligned": {}, "xs_window": {},
                   "ts": ts, "avail": {mod: (mod in avail) for mod in MODALITIES}}
 
         for mod, ds in self._dsets.items():
@@ -141,12 +152,19 @@ class QuadModalDataset(Dataset):
             sample["xs_next"][mod] = x_next
             sample["ys_next"][mod] = x_next
 
-            # Lag-corrected version: load at t + lag_offsets[mod]
+            # Fixed-lag alignment (from analyse_lag.py output)
             if self._lag:
                 off = self._lag.get(mod, 0)
                 sample["xs_aligned"][mod] = ds._load(self._ts[i + off]) if off != 0 else x
             else:
                 sample["xs_aligned"][mod] = x
+
+            # Dynamic-lag window: K snapshots at t, t+1, ..., t+K-1
+            if self._window_steps > 0:
+                frames = torch.stack([
+                    ds._load(self._ts[i + k]) for k in range(self._window_steps)
+                ])  # (K, C, H, W)
+                sample["xs_window"][mod] = frames
 
         if self._u is not None:
             sample["u"]         = torch.from_numpy(self._u[i])
@@ -197,7 +215,8 @@ class TriModalDataModule(pl.LightningDataModule):
         num_workers:  int = 16,
         pin_memory:   bool = False,
         delta_t_steps: int = 1,
-        lag_matrix:   Optional[Dict[str, int]] = None,
+        lag_matrix:         Optional[Dict[str, int]] = None,
+        align_window_steps: int = 0,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=[
@@ -248,6 +267,7 @@ class TriModalDataModule(pl.LightningDataModule):
             omni_mask=mask,
             delta_t_steps=hp.delta_t_steps,
             lag_offsets=self._lag_offsets or None,
+            align_window_steps=hp.align_window_steps,
         )
 
     def setup(self, stage=None):
@@ -305,6 +325,12 @@ def _collate(batch: List[dict]) -> dict:
     for k in keys:
         if k in ("xs", "ys", "xs_next", "ys_next", "xs_aligned"):
             # Only stack modalities present in ALL items of the batch
+            all_mods = set(batch[0][k].keys())
+            for b in batch[1:]:
+                all_mods &= set(b[k].keys())
+            out[k] = {mod: torch.stack([b[k][mod] for b in batch]) for mod in all_mods}
+        elif k == "xs_window":
+            # xs_window[mod] per sample is (K, C, H, W); batch to (B, K, C, H, W)
             all_mods = set(batch[0][k].keys())
             for b in batch[1:]:
                 all_mods &= set(b[k].keys())

@@ -23,9 +23,10 @@ Loading Stage 0 weights:
 
 import itertools
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict
 
 import torch
+import torch.nn as nn
 import pytorch_lightning as pl
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
@@ -34,6 +35,7 @@ from ..models.fusion import UnifiedIonosphereModel
 from ..models.losses import (
     clip_loss, variance_loss, multi_modal_recon_loss, per_modality_recon_losses,
 )
+from ..models.temporal_align import TemporalAlignmentHead, encode_window
 
 MODALITIES = ("sd", "smag", "tec", "dmsp")
 
@@ -65,19 +67,31 @@ class Stage1ContrastiveModule(pl.LightningModule):
         warmup_steps:       int   = 500,
         max_steps:          int   = 50_000,
         p_mod_drop:         float = 0.2,
+        align_window_steps: int   = 0,   # 0 = use fixed-lag xs_aligned; >0 = soft attention
     ):
         super().__init__()
-        self.model        = model
-        self.tau          = tau
-        self.lambda_recon = lambda_recon
-        self.lambda_temp  = lambda_temp
-        self.warmup_steps = warmup_steps
-        self.max_steps    = max_steps
-        self.p_mod_drop   = p_mod_drop
+        self.model              = model
+        self.tau                = tau
+        self.lambda_recon       = lambda_recon
+        self.lambda_temp        = lambda_temp
+        self.warmup_steps       = warmup_steps
+        self.max_steps          = max_steps
+        self.p_mod_drop         = p_mod_drop
+        self.align_window_steps = align_window_steps
         self.save_hyperparameters(ignore=["model"])
 
         if ckpt_stage0_dir is not None:
             self._load_stage0_encoders(Path(ckpt_stage0_dir))
+
+        # One TemporalAlignmentHead per non-smag modality (smag is the anchor)
+        latent_dim = model.latent_dim
+        if align_window_steps > 0:
+            self.align_heads = nn.ModuleDict({
+                mod: TemporalAlignmentHead(latent_dim, window_size=align_window_steps)
+                for mod in ("sd", "tec", "dmsp")
+            })
+        else:
+            self.align_heads = nn.ModuleDict()
 
     def _load_stage0_encoders(self, ckpt_dir: Path):
         loaded = []
@@ -103,29 +117,49 @@ class Stage1ContrastiveModule(pl.LightningModule):
 
     def _step(self, batch, p_drop: float):
         xs, ys, xs_next, xs_aligned, u, omni_mask = self._unpack(batch)
+        xs_window = batch.get("xs_window", {})   # {mod: (B, K, C, H, W)} or empty
         decode_mods = tuple(ys.keys())
 
         out      = self.model(xs,         u, omni_mask, decode_mods=decode_mods, p_mod_drop=p_drop)
         out_next = self.model(xs_next,    u, omni_mask, decode_mods=(), p_mod_drop=0.0)
-        # Encode lag-corrected versions for cross-modal CLIP (no dropout — need all mods)
         out_aln  = self.model(xs_aligned, u, omni_mask, decode_mods=(), p_mod_drop=0.0)
 
-        z_views      = out["z_views"]         # {mod: (B, D)} — from xs (t)
-        z_views_aln  = out_aln["z_views"]     # {mod: (B, D)} — from xs_aligned (t+lag_mod)
-        z_shared     = out["z_shared"]        # (B, D)
-        z_shared_next= out_next["z_shared"]   # (B, D)
+        z_views       = out["z_views"]          # {mod: (B, D)} — from xs (t)
+        z_views_aln   = out_aln["z_views"]      # {mod: (B, D)} — from xs_aligned (t+lag_mod)
+        z_shared      = out["z_shared"]         # (B, D)
+        z_shared_next = out_next["z_shared"]    # (B, D)
 
-        # --- Cross-modal CLIP on lag-aligned representations ---
-        # z_smag(t) vs z_sd(t+lag_smag→sd): same causal "moment" in the substorm cycle
+        # --- Cross-modal CLIP ---
+        # If xs_window is present and align_heads are initialised, use soft attention
+        # over the window (dynamic lag conditioned on z_smag).  Otherwise fall back
+        # to the fixed-lag xs_aligned encodings.
+        attn_logs: Dict[str, torch.Tensor] = {}
+        if xs_window and self.align_heads and "smag" in z_views_aln:
+            z_smag_ref = z_views_aln["smag"]   # (B, D) — anchor state
+            z_cross: Dict[str, torch.Tensor] = {"smag": z_smag_ref}
+            for mod, head in self.align_heads.items():
+                if mod in xs_window and mod in z_views_aln:
+                    # Encode window (detached) — no gradient through target encoder
+                    enc = self.model.encoders[mod]
+                    z_win = encode_window(enc, xs_window[mod], self.model.latent_dim)
+                    z_aligned_mod, w = head(z_smag_ref, z_win)
+                    z_cross[mod]     = z_aligned_mod
+                    attn_logs[f"lag_mean_{mod}"] = TemporalAlignmentHead.mean_lag(w).mean()
+                    attn_logs[f"lag_entropy_{mod}"] = (
+                        -(w * (w + 1e-8).log()).sum(dim=-1).mean()
+                    )
+                else:
+                    z_cross[mod] = z_views_aln.get(mod, z_views.get(mod))
+        else:
+            z_cross = z_views_aln
+
         l_clip_cross = z_shared.new_tensor(0.0)
         mod_pairs = list(itertools.combinations(
-            [m for m in MODALITIES if m in z_views_aln], 2
+            [m for m in MODALITIES if m in z_cross and z_cross[m] is not None], 2
         ))
         if mod_pairs:
             for m_a, m_b in mod_pairs:
-                l_clip_cross = l_clip_cross + clip_loss(
-                    z_views_aln[m_a], z_views_aln[m_b], tau=self.tau
-                )
+                l_clip_cross = l_clip_cross + clip_loss(z_cross[m_a], z_cross[m_b], tau=self.tau)
             l_clip_cross = l_clip_cross / len(mod_pairs)
 
         # --- Temporal CLIP: z_shared_t vs z_shared_{t+delta} ---
@@ -152,6 +186,7 @@ class Stage1ContrastiveModule(pl.LightningModule):
             "l_var":         l_var,
             "n_mods":        torch.tensor(float(len(z_views))),
             **{f"recon_{k}": v for k, v in per_mod.items()},
+            **attn_logs,      # lag_mean_{mod}, lag_entropy_{mod} when window active
         }
 
     def training_step(self, batch, batch_idx):

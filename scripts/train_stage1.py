@@ -53,7 +53,10 @@ def parse_args():
     ap.add_argument("--delta_t_steps", type=int, default=8,
                     help="Steps between t and t+delta for temporal CLIP (default 8 = 16 min)")
     ap.add_argument("--lag_matrix", type=Path, default=None,
-                    help="lag_matrix.json from analyse_lag.py — enables lag-corrected cross-modal CLIP")
+                    help="lag_matrix.json from analyse_lag.py — enables fixed-lag cross-modal CLIP")
+    ap.add_argument("--align_window_steps", type=int, default=0,
+                    help="Window size K for soft-attention dynamic lag (0=disabled, e.g. 8=16 min). "
+                         "Enables TemporalAlignmentHead; requires more memory than fixed lag.")
     ap.add_argument("--wandb_project", default="iome")
     ap.add_argument("--wandb_entity",  default="st7ma784")
     ap.add_argument("--wandb_name",    default="stage1")
@@ -124,6 +127,7 @@ def main():
         pin_memory=False,
         delta_t_steps=args.delta_t_steps,
         lag_matrix=lag_matrix,
+        align_window_steps=args.align_window_steps,
     )
 
     model  = UnifiedIonosphereModel(latent_dim=args.latent_dim)
@@ -135,6 +139,7 @@ def main():
         lambda_recon=args.lambda_recon,
         max_steps=args.max_steps,
         p_mod_drop=args.p_mod_drop,
+        align_window_steps=args.align_window_steps,
     )
 
     logger  = WandbLogger(project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name)

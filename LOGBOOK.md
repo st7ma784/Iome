@@ -179,7 +179,82 @@ because:
 
 ---
 
-## 2026-09-06 — Lag-corrected cross-modal CLIP
+## 2026-09-06 — Dynamic lag: soft temporal alignment
+
+### Problem with fixed lag
+The causal propagation delay from SuperMAG substorm onset to SuperDARN convection
+response is **not constant**.  It varies with:
+- Solar wind Bz (stronger southward → faster energy injection → shorter lag, ~8 min vs ~25 min)
+- Substorm intensity (stronger onset → faster convection response)
+- Substorm phase (growth vs expansion vs recovery have different cross-modal coupling)
+- MLT sector (dawn/dusk asymmetry in convection patterns)
+
+A single `lag_offsets["sd"] = 8` is the mean over all these conditions.
+
+### Three approaches considered
+
+**1. Soft window attention (implemented)**
+Encode each modality at K snapshots t, t+1, ..., t+K-1.  A small MLP takes
+`z_smag(t)` → attention weights over K positions (softmax).  The attended `z_X`
+is the state-conditioned lag mixture.  Window encodings are **detached** from
+gradient, so memory cost is O(1) in K — the gradient flows only through the
+attention weights (the lag predictor) and `z_smag`.  Target encoder gets
+gradients via reconstruction and temporal CLIP.
+
+Advantage: naturally handles multimodal lag distributions (e.g., weak substorms
+peak at lag=4, strong at lag=12 — the attention can learn a bimodal weight).
+
+**2. LagPredictor + differentiable linear interpolation**
+`MLP(z_smag)` → continuous scalar `λ ∈ [0, K]`, then interpolate:
+`z_aligned = (ceil(λ) - λ) * z_floor + (λ - floor(λ)) * z_ceil`.
+Only 2 encoder calls per modality.  Interpretable (log `λ` conditioned on
+substorm index or Bz).  Cannot represent bimodal lag distributions.
+To use: replace `TemporalAlignmentHead` with `LagPredictor(latent_dim, n_targets=3)`.
+
+**3. Cross-correlation soft-argmax**
+Compute `corr[k] = cos_sim(z_smag(t), z_X(t+k))` for k in window during each step,
+then take a differentiable soft-argmax: `λ = Σ k * softmax(β * corr)[k]`.
+No learnable parameters — the lag falls entirely out of the loss landscape.
+Most memory-intensive (K encoder forward passes in the loop).  A clean baseline
+to check that methods 1 and 2 find the same peak.
+
+### Chosen approach
+**Soft window attention** (`TemporalAlignmentHead`).  Enabled via
+`--align_window_steps K` (K=8 recommended = 16 min window at 2-min cadence).
+Fixed-lag fallback remains active when K=0 (default).
+
+### Metrics to decide when to change method
+
+Logged to wandb per step when window is active:
+- `train/lag_mean_{mod}` — expected lag = Σ k * w_k in steps (×2 = minutes)
+  Watch for: constant value → head collapsed to always pick same lag → switch to method 2
+- `train/lag_entropy_{mod}` — entropy of attention distribution
+  Watch for: entropy → 0 → attention is deterministic (one lag dominates);
+             entropy → log(K) → attention is uniform (head learned nothing)
+  Healthy: intermediate, varying with substorm level
+
+Additional checks (not auto-logged, run manually):
+- Correlate `lag_mean_sd` with Dst index or AL index — should be anticorrelated
+  during storm main phase (shorter lag under strong driving)
+- Compare distribution of `lag_mean_sd` during quiet vs substorm hours —
+  should shift to shorter values during substorms
+- If `lag_entropy > 0.9 * log(K)` for >1000 steps, head is not learning:
+  try larger τ in the attention temperature (anneal softmax sharpness), or
+  switch to method 2 (LagPredictor interpolation)
+- If `lag_mean_sd` is outside [2, 15] steps (4–30 min) at convergence, the
+  physics is wrong — check smag encoder quality from Stage 0
+
+### Implementation
+- `src/iome/models/temporal_align.py` — `TemporalAlignmentHead`, `encode_window`
+- `src/iome/data/datamodule.py` — `QuadModalDataset` returns `xs_window (B,K,C,H,W)`
+  when `align_window_steps > 0`; fixed-lag `xs_aligned` still returned always
+- `src/iome/train/stage1.py` — soft attention cross-modal CLIP when window present;
+  logs `lag_mean_{mod}` and `lag_entropy_{mod}`
+- `scripts/train_stage1.py` — `--align_window_steps` arg
+
+---
+
+## 2026-09-06 — Fixed lag-corrected cross-modal CLIP
 
 ### Motivation
 Phase 1 originally paired `z_smag(t)` with `z_sd(t)` — same timestamp, different sensors.
