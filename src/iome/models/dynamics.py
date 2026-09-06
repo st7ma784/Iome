@@ -24,6 +24,76 @@ import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
+# Solar-wind temporal alignment
+# ---------------------------------------------------------------------------
+
+class SolarWindAlignmentHead(nn.Module):
+    """
+    Soft attention over a window of K past OMNI snapshots conditioned on the
+    current shared latent state z.
+
+    The window is ordered oldest-first: index 0 = t-(K-1) (maximum lag),
+    index K-1 = t (zero lag).  The attention head learns which propagation
+    delay best explains the current ionospheric state.
+
+    Args:
+        latent_dim:  dimension of z
+        window_size: K — number of past OMNI steps to attend over
+        u_dim:       OMNI feature dimension (8 by default)
+    """
+
+    def __init__(self, latent_dim: int, window_size: int, u_dim: int):
+        super().__init__()
+        h = latent_dim // 2
+        self.window_size = window_size
+        self.attn = nn.Sequential(
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, h),
+            nn.GELU(),
+            nn.Linear(h, window_size),
+        )
+        nn.init.zeros_(self.attn[-1].weight)
+        nn.init.zeros_(self.attn[-1].bias)
+
+    def forward(
+        self,
+        z: torch.Tensor,
+        u_window: torch.Tensor,
+        omni_mask_window: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            z:                (B, latent_dim) current latent state
+            u_window:         (B, K, u_dim) past K OMNI snapshots, oldest first
+            omni_mask_window: (B, K) float — 1.0 where OMNI is valid, 0.0 missing
+        Returns:
+            u_eff:   (B, u_dim) soft-weighted OMNI vector
+            weights: (B, K) attention weights (sum to 1)
+        """
+        logits = self.attn(z)                            # (B, K)
+        if omni_mask_window is not None:
+            logits = logits.masked_fill(omni_mask_window < 0.5, -1e9)
+        weights = torch.softmax(logits, dim=-1)          # (B, K)
+        u_eff   = (weights.unsqueeze(-1) * u_window).sum(1)  # (B, u_dim)
+        return u_eff, weights
+
+    @staticmethod
+    def lag_diagnostics(weights: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns (lag_steps_mean, entropy_mean) averaged over the batch.
+
+        lag_steps_mean: expected propagation lag in 2-min steps.
+            = (K-1) - E[index], because index K-1 = zero lag, index 0 = max lag.
+        entropy_mean: -Σ w·log(w).  Near log(K) → head not yet selective.
+        """
+        K   = weights.shape[-1]
+        idx = torch.arange(K, device=weights.device, dtype=weights.dtype)
+        lag = (K - 1) - (weights * idx).sum(-1)              # (B,)
+        ent = -(weights * (weights + 1e-8).log()).sum(-1)     # (B,)
+        return lag.mean(), ent.mean()
+
+
+# ---------------------------------------------------------------------------
 # FiLM primitive
 # ---------------------------------------------------------------------------
 
@@ -94,9 +164,17 @@ class LatentDynamics(nn.Module):
         u_dim: int = 8,
         hidden_dim: int = 512,
         n_layers: int = 4,
+        wind_window_size: int = 1,
     ):
         super().__init__()
         assert n_layers >= 1
+
+        # Optional soft-attention alignment over past K OMNI snapshots.
+        # Disabled (wind_window_size=1) → single snapshot, no extra parameters.
+        if wind_window_size > 1:
+            self.wind_align = SolarWindAlignmentHead(latent_dim, wind_window_size, u_dim)
+        else:
+            self.wind_align = None
 
         # Embed the OMNI driver once; each FiLMLayer then reads this embedding.
         self.u_embed = nn.Sequential(
@@ -135,17 +213,27 @@ class LatentDynamics(nn.Module):
         z: torch.Tensor,
         u: torch.Tensor,
         omni_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        omni_mask_window: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Args:
-            z:          (B, latent_dim) current shared latent state
-            u:          (B, u_dim) OMNI solar-wind features
-            omni_mask:  (B, 1) float — 1.0 when u is valid, 0.0 if OMNI is missing.
-                        If None, treated as all-ones (fully conditioned).
+            z:                (B, latent_dim) current shared latent state
+            u:                (B, u_dim) single OMNI snapshot, OR
+                              (B, K, u_dim) window of K past snapshots (oldest first)
+                              when wind_align is active.
+            omni_mask:        (B, 1) float — 1.0 when u is valid (single-snapshot mode).
+            omni_mask_window: (B, K) float — per-step validity mask (window mode).
         Returns:
-            z_next:     (B, latent_dim)
+            z_next:       (B, latent_dim)
+            wind_weights: (B, K) softmax weights from SolarWindAlignmentHead, or None
         """
         if omni_mask is None:
+            omni_mask = torch.ones(z.shape[0], 1, device=z.device, dtype=z.dtype)
+
+        wind_weights = None
+        if self.wind_align is not None and u.ndim == 3:
+            u, wind_weights = self.wind_align(z, u, omni_mask_window)
+            # u is now (B, u_dim); use scalar mask=1 since wind_align already handled it
             omni_mask = torch.ones(z.shape[0], 1, device=z.device, dtype=z.dtype)
 
         u_emb = self.u_embed(u)          # (B, hidden_dim)
@@ -155,4 +243,4 @@ class LatentDynamics(nn.Module):
             h = film(layer(h), u_emb, omni_mask)
 
         delta = self.out_proj(h)
-        return z + delta                 # residual: starts as identity (zero-init)
+        return z + delta, wind_weights   # residual: starts as identity (zero-init)

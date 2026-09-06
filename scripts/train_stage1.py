@@ -57,6 +57,9 @@ def parse_args():
     ap.add_argument("--align_window_steps", type=int, default=0,
                     help="Window size K for soft-attention dynamic lag (0=disabled, e.g. 8=16 min). "
                          "Enables TemporalAlignmentHead; requires more memory than fixed lag.")
+    ap.add_argument("--wind_window_steps", type=int, default=0,
+                    help="Window size K for solar-wind propagation lag (0=disabled, e.g. 30=60 min). "
+                         "Enables SolarWindAlignmentHead in LatentDynamics.")
     ap.add_argument("--wandb_project", default="iome")
     ap.add_argument("--wandb_entity",  default="st7ma784")
     ap.add_argument("--wandb_name",    default="stage1")
@@ -128,9 +131,13 @@ def main():
         delta_t_steps=args.delta_t_steps,
         lag_matrix=lag_matrix,
         align_window_steps=args.align_window_steps,
+        wind_window_steps=args.wind_window_steps,
     )
 
-    model  = UnifiedIonosphereModel(latent_dim=args.latent_dim)
+    model  = UnifiedIonosphereModel(
+        latent_dim=args.latent_dim,
+        wind_window_size=args.wind_window_steps if args.wind_window_steps > 1 else 1,
+    )
     module = Stage1ContrastiveModule(
         model=model,
         ckpt_stage0_dir=args.ckpt_stage0_dir,

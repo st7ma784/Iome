@@ -49,6 +49,7 @@ class UnifiedIonosphereModel(nn.Module):
         u_dim: int = 8,
         dyn_hidden: int = 512,
         dyn_layers: int = 4,
+        wind_window_size: int = 1,
     ):
         super().__init__()
         self.latent_dim = latent_dim
@@ -72,6 +73,7 @@ class UnifiedIonosphereModel(nn.Module):
             u_dim=u_dim,
             hidden_dim=dyn_hidden,
             n_layers=dyn_layers,
+            wind_window_size=wind_window_size,
         )
 
         # --- Per-modality decoders --------------------------------------------
@@ -177,6 +179,7 @@ class UnifiedIonosphereModel(nn.Module):
         xs: Dict[str, torch.Tensor],
         u: torch.Tensor,
         omni_mask: Optional[torch.Tensor] = None,
+        omni_mask_window: Optional[torch.Tensor] = None,
         decode_mods: Optional[tuple] = None,
         p_mod_drop: float = 0.0,
     ) -> Dict[str, object]:
@@ -184,11 +187,13 @@ class UnifiedIonosphereModel(nn.Module):
         Full nowcast + one-step forecast with optional modality dropout.
 
         Args:
-            xs:          {mod: (B, C, H, W)} all available observation tensors at t
-            u:           (B, u_dim) OMNI solar-wind features
-            omni_mask:   (B, 1) float — 1.0 when u is valid
-            decode_mods: modalities to reconstruct (default: all keys in xs)
-            p_mod_drop:  per-modality drop probability (applied during training only)
+            xs:               {mod: (B, C, H, W)} all available observation tensors at t
+            u:                (B, u_dim) single OMNI snapshot, OR
+                              (B, K, u_dim) past-K window when wind_window_size > 1
+            omni_mask:        (B, 1) float — 1.0 when u is valid (single-snapshot mode)
+            omni_mask_window: (B, K) float — per-step mask (window mode)
+            decode_mods:      modalities to reconstruct (default: all keys in xs)
+            p_mod_drop:       per-modality drop probability (applied during training only)
 
         Returns:
             dict with:
@@ -198,6 +203,7 @@ class UnifiedIonosphereModel(nn.Module):
                 z_next       — (B, D) predicted latent at t+1
                 y_hats       — {mod: (B, C, H, W)} reconstructions at t
                 y_next_hats  — {mod: (B, C, H, W)} forecast at t+1
+                wind_weights — (B, K) OMNI alignment weights, or None
         """
         if decode_mods is None:
             decode_mods = tuple(xs.keys())
@@ -206,7 +212,7 @@ class UnifiedIonosphereModel(nn.Module):
         xs_enc = self.apply_mod_drop(xs, p_mod_drop)
 
         z_views, z_shared = self.encode(xs_enc)
-        z_next = self.dynamics(z_shared, u, omni_mask)
+        z_next, wind_weights = self.dynamics(z_shared, u, omni_mask, omni_mask_window)
 
         # Decode ALL requested modalities (includes cross-modal reconstruction
         # for any that were dropped from xs_enc but are still in decode_mods)
@@ -220,6 +226,7 @@ class UnifiedIonosphereModel(nn.Module):
             "z_next":      z_next,
             "y_hats":      y_hats,
             "y_next_hats": y_next_hats,
+            "wind_weights": wind_weights,
         }
 
     # ------------------------------------------------------------------

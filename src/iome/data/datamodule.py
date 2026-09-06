@@ -106,6 +106,7 @@ class QuadModalDataset(Dataset):
         delta_t_steps:      int = 1,
         lag_offsets:        Optional[Dict[str, int]] = None,
         align_window_steps: int = 0,
+        wind_window_steps:  int = 0,
     ):
         self._ts    = timestamps
         self._avail = avail_map
@@ -120,6 +121,7 @@ class QuadModalDataset(Dataset):
         self._delta          = delta_t_steps
         self._lag            = lag_offsets or {}
         self._window_steps   = align_window_steps  # K; 0 = disabled
+        self._wind_window    = wind_window_steps    # K_omni; 0 = disabled
 
         # Trim valid range to avoid index overflow for any loaded offset
         fixed_offsets = list(self._lag.values()) if self._lag else []
@@ -169,6 +171,22 @@ class QuadModalDataset(Dataset):
         if self._u is not None:
             sample["u"]         = torch.from_numpy(self._u[i])
             sample["omni_mask"] = torch.from_numpy(self._omni_mask[i])
+
+            # Backward OMNI window: K past snapshots [t-(K-1), ..., t], oldest first.
+            # Zero-padded at the start when i < K-1 (not enough history).
+            if self._wind_window > 0:
+                K     = self._wind_window
+                start = max(0, i - K + 1)
+                pad   = K - (i - start + 1)
+                u_win = self._u[start : i + 1]              # (K-pad, u_dim)
+                m_win = self._omni_mask[start : i + 1]      # (K-pad, 1)
+                if pad > 0:
+                    z_u = np.zeros((pad, u_win.shape[1]), dtype=np.float32)
+                    z_m = np.zeros((pad, 1),              dtype=np.float32)
+                    u_win = np.concatenate([z_u, u_win], axis=0)
+                    m_win = np.concatenate([z_m, m_win], axis=0)
+                sample["u_window"]         = torch.from_numpy(u_win)          # (K, u_dim)
+                sample["omni_mask_window"] = torch.from_numpy(m_win.squeeze(-1))  # (K,)
         else:
             sample["u"]         = torch.zeros(8)
             sample["omni_mask"] = torch.zeros(1)
@@ -217,6 +235,7 @@ class TriModalDataModule(pl.LightningDataModule):
         delta_t_steps: int = 1,
         lag_matrix:         Optional[Dict[str, int]] = None,
         align_window_steps: int = 0,
+        wind_window_steps:  int = 0,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=[
@@ -268,6 +287,7 @@ class TriModalDataModule(pl.LightningDataModule):
             delta_t_steps=hp.delta_t_steps,
             lag_offsets=self._lag_offsets or None,
             align_window_steps=hp.align_window_steps,
+            wind_window_steps=hp.wind_window_steps,
         )
 
     def setup(self, stage=None):

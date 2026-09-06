@@ -36,6 +36,7 @@ from ..models.losses import (
     clip_loss, variance_loss, multi_modal_recon_loss, per_modality_recon_losses,
 )
 from ..models.temporal_align import TemporalAlignmentHead, encode_window
+from ..models.dynamics import SolarWindAlignmentHead
 
 MODALITIES = ("sd", "smag", "tec", "dmsp")
 
@@ -111,18 +112,19 @@ class Stage1ContrastiveModule(pl.LightningModule):
         ys          = batch["ys"]
         xs_next     = batch.get("xs_next", {})
         xs_aligned  = batch.get("xs_aligned", xs)   # lag-corrected; falls back to xs
-        u           = batch["u"]
+        u           = batch.get("u_window", batch["u"])   # (B,K,u_dim) window or (B,u_dim)
         omni_mask   = batch.get("omni_mask", None)
-        return xs, ys, xs_next, xs_aligned, u, omni_mask
+        omni_mask_w = batch.get("omni_mask_window", None)  # (B, K) or None
+        return xs, ys, xs_next, xs_aligned, u, omni_mask, omni_mask_w
 
     def _step(self, batch, p_drop: float):
-        xs, ys, xs_next, xs_aligned, u, omni_mask = self._unpack(batch)
+        xs, ys, xs_next, xs_aligned, u, omni_mask, omni_mask_w = self._unpack(batch)
         xs_window = batch.get("xs_window", {})   # {mod: (B, K, C, H, W)} or empty
         decode_mods = tuple(ys.keys())
 
-        out      = self.model(xs,         u, omni_mask, decode_mods=decode_mods, p_mod_drop=p_drop)
-        out_next = self.model(xs_next,    u, omni_mask, decode_mods=(), p_mod_drop=0.0)
-        out_aln  = self.model(xs_aligned, u, omni_mask, decode_mods=(), p_mod_drop=0.0)
+        out      = self.model(xs,         u, omni_mask, omni_mask_w, decode_mods=decode_mods, p_mod_drop=p_drop)
+        out_next = self.model(xs_next,    u, omni_mask, omni_mask_w, decode_mods=(), p_mod_drop=0.0)
+        out_aln  = self.model(xs_aligned, u, omni_mask, omni_mask_w, decode_mods=(), p_mod_drop=0.0)
 
         z_views       = out["z_views"]          # {mod: (B, D)} — from xs (t)
         z_views_aln   = out_aln["z_views"]      # {mod: (B, D)} — from xs_aligned (t+lag_mod)
@@ -152,6 +154,12 @@ class Stage1ContrastiveModule(pl.LightningModule):
                     z_cross[mod] = z_views_aln.get(mod, z_views.get(mod))
         else:
             z_cross = z_views_aln
+
+        # --- Solar-wind temporal alignment diagnostics ---
+        if out.get("wind_weights") is not None:
+            lag_mean, lag_ent = SolarWindAlignmentHead.lag_diagnostics(out["wind_weights"])
+            attn_logs["wind_lag_mean"]    = lag_mean    # expected lag in 2-min steps
+            attn_logs["wind_lag_entropy"] = lag_ent     # near log(K) = not yet selective
 
         l_clip_cross = z_shared.new_tensor(0.0)
         mod_pairs = list(itertools.combinations(
