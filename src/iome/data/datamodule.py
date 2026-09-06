@@ -80,6 +80,11 @@ class QuadModalDataset(Dataset):
     """
     Joins up to four per-modality datasets on shared timestamps.
     Each sample returns only the modalities that have data at that timestamp.
+
+    If lag_offsets is provided (e.g. {"smag": 0, "sd": 8, "tec": 5}), each
+    modality in xs_aligned is loaded at t + lag_offsets[mod] rather than t.
+    This aligns modalities on the same causal "moment" (smag substorm onset
+    at t, sd convection response at t+8, etc.) for lag-corrected cross-modal CLIP.
     """
 
     def __init__(
@@ -93,6 +98,7 @@ class QuadModalDataset(Dataset):
         u:            Optional[np.ndarray] = None,
         omni_mask:    Optional[np.ndarray] = None,
         delta_t_steps: int = 1,
+        lag_offsets:   Optional[Dict[str, int]] = None,
     ):
         self._ts    = timestamps
         self._avail = avail_map
@@ -105,7 +111,13 @@ class QuadModalDataset(Dataset):
         self._u         = u
         self._omni_mask = omni_mask
         self._delta     = delta_t_steps
-        self._valid     = list(range(len(timestamps) - delta_t_steps))
+        self._lag       = lag_offsets or {}
+
+        # Trim valid range to avoid out-of-bounds for both xs_next and xs_aligned
+        all_offsets = list(self._lag.values()) + [delta_t_steps]
+        min_off = min(0, min(all_offsets))
+        max_off = max(all_offsets)
+        self._valid = list(range(-min_off, len(timestamps) - max_off))
 
     def __len__(self):
         return len(self._valid)
@@ -116,16 +128,25 @@ class QuadModalDataset(Dataset):
         avail = set(self._avail.get(ts, list(self._dsets.keys())))
 
         sample = {"xs": {}, "ys": {}, "xs_next": {}, "ys_next": {},
+                  "xs_aligned": {},
                   "ts": ts, "avail": {mod: (mod in avail) for mod in MODALITIES}}
 
         for mod, ds in self._dsets.items():
             if ds is None or mod not in avail:
                 continue
-            item = ds[i]
-            sample["xs"][mod]      = item[mod]
-            sample["ys"][mod]      = item[mod]
-            sample["xs_next"][mod] = item[mod + "_next"]
-            sample["ys_next"][mod] = item[mod + "_next"]
+            x      = ds._load(self._ts[i])
+            x_next = ds._load(self._ts[i + self._delta])
+            sample["xs"][mod]      = x
+            sample["ys"][mod]      = x
+            sample["xs_next"][mod] = x_next
+            sample["ys_next"][mod] = x_next
+
+            # Lag-corrected version: load at t + lag_offsets[mod]
+            if self._lag:
+                off = self._lag.get(mod, 0)
+                sample["xs_aligned"][mod] = ds._load(self._ts[i + off]) if off != 0 else x
+            else:
+                sample["xs_aligned"][mod] = x
 
         if self._u is not None:
             sample["u"]         = torch.from_numpy(self._u[i])
@@ -152,6 +173,9 @@ class TriModalDataModule(pl.LightningDataModule):
         omni_dir:   directory of omni_{YYYY}.npy files
         batch_size, num_workers, pin_memory: DataLoader kwargs
         delta_t_steps: steps between t and t+1
+        lag_matrix: compact lag dict from analyse_lag.py, e.g.
+                    {"smag->sd": 8, "smag->tec": 5, ...} — used to build
+                    per-modality offsets for lag-corrected cross-modal CLIP
     """
 
     def __init__(
@@ -173,6 +197,7 @@ class TriModalDataModule(pl.LightningDataModule):
         num_workers:  int = 16,
         pin_memory:   bool = False,
         delta_t_steps: int = 1,
+        lag_matrix:   Optional[Dict[str, int]] = None,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=[
@@ -184,6 +209,7 @@ class TriModalDataModule(pl.LightningDataModule):
             "test":  timestamps_test,
         }
         self._avail_map = avail_map or {}
+        self._lag_offsets = _lag_offsets_from_matrix(lag_matrix) if lag_matrix else {}
 
     def _make_dset(self, split: str) -> QuadModalDataset:
         ts = self._timestamps[split]
@@ -221,6 +247,7 @@ class TriModalDataModule(pl.LightningDataModule):
             u=u,
             omni_mask=mask,
             delta_t_steps=hp.delta_t_steps,
+            lag_offsets=self._lag_offsets or None,
         )
 
     def setup(self, stage=None):
@@ -253,11 +280,30 @@ class TriModalDataModule(pl.LightningDataModule):
 # Collate
 # ---------------------------------------------------------------------------
 
+def _lag_offsets_from_matrix(lag_matrix: Dict[str, int]) -> Dict[str, int]:
+    """
+    Convert the compact lag_matrix (from analyse_lag.py) into per-modality
+    load offsets relative to smag as the causal reference.
+
+    lag_matrix["smag->X"] = k means smag leads X by k steps — the sd/tec/dmsp
+    response to a smag substorm onset manifests k steps later.  Loading X at
+    t + k aligns it with smag at t on the same causal moment.
+    """
+    offsets: Dict[str, int] = {"smag": 0}
+    for key, k in lag_matrix.items():
+        a, b = key.split("->")
+        if a == "smag" and b not in offsets:
+            offsets[b] = max(0, k)   # only forward offsets make causal sense
+    for mod in ("sd", "tec", "dmsp"):
+        offsets.setdefault(mod, 0)
+    return offsets
+
+
 def _collate(batch: List[dict]) -> dict:
     keys = batch[0].keys()
     out  = {}
     for k in keys:
-        if k in ("xs", "ys", "xs_next", "ys_next"):
+        if k in ("xs", "ys", "xs_next", "ys_next", "xs_aligned"):
             # Only stack modalities present in ALL items of the batch
             all_mods = set(batch[0][k].keys())
             for b in batch[1:]:

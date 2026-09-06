@@ -46,6 +46,21 @@ fi
 # ------------------------------------------------------------------
 # Single training run
 # ------------------------------------------------------------------
+# Use lag matrix if available (produced by analyse_lag.py after Stage 0)
+LAG_ARGS=""
+if [[ -f "$SPLITS/lag_matrix.json" ]]; then
+    LAG_ARGS="--lag_matrix $SPLITS/lag_matrix.json"
+    echo "[hdd01] Using lag-corrected cross-modal CLIP: $SPLITS/lag_matrix.json"
+fi
+
+# Use stage0 encoder weights if available
+STAGE0_ARGS=""
+STAGE0_CKPT_DIR="$CACHE/ckpts/stage0"
+if [[ -d "$STAGE0_CKPT_DIR" ]]; then
+    STAGE0_ARGS="--ckpt_stage0_dir $STAGE0_CKPT_DIR"
+    echo "[hdd01] Loading stage0 encoder weights from $STAGE0_CKPT_DIR"
+fi
+
 nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --splits_dir  "$SPLITS"             \
     --cache_sd    "$CACHE/superdarn"    \
@@ -64,6 +79,8 @@ nohup $PYTHON -u "$IOME_DIR/scripts/train_stage1.py" \
     --p_mod_drop  0.3                   \
     --wandb_project iome                \
     --wandb_name  hdd01-drop0.3-tau0.1  \
+    $STAGE0_ARGS                        \
+    $LAG_ARGS                           \
     > "$LOG_DIR/stage1-hdd01.log" 2>&1 &
 
 PID=$!

@@ -179,6 +179,42 @@ because:
 
 ---
 
+## 2026-09-06 — Lag-corrected cross-modal CLIP
+
+### Motivation
+Phase 1 originally paired `z_smag(t)` with `z_sd(t)` — same timestamp, different sensors.
+But the substorm onset visible in SuperMAG precedes the convection response in SuperDARN by
+10–30 minutes.  Pairing same-timestamp latents forces the model to align states that are NOT
+causally contemporaneous.  The lag analysis (`analyse_lag.py`) recovers the empirical delays
+from latent-space cross-correlation.
+
+### Implementation
+**`src/iome/data/datamodule.py`**:
+- `QuadModalDataset` accepts `lag_offsets: {mod: steps}` (smag=0 as reference)
+- Returns `xs_aligned` in each batch — each modality loaded at `t + lag_offsets[mod]`
+  rather than `t`.  E.g. `xs_aligned["sd"]` = sd at `t + 8` aligns causally with smag at `t`.
+- `TriModalDataModule` accepts `lag_matrix` dict and converts via `_lag_offsets_from_matrix()`
+- `_valid` range safely trimmed to avoid index overflow for any combination of offsets
+
+**`src/iome/train/stage1.py`**:
+- Separate forward pass through `xs_aligned` (no dropout) → `out_aln`
+- Cross-modal CLIP now uses `z_views_aln` from lag-aligned inputs
+- Temporal CLIP unchanged (still uses `z_shared_t` vs `z_shared_{t+delta}`)
+
+**`scripts/train_stage1.py`**: `--lag_matrix /path/lag_matrix.json` arg
+
+**`deploy/scc_hdd01_stage0.sh`**: auto-runs `analyse_lag.py` after all four encoders finish
+
+**`deploy/scc_hdd01_stage1.sh`**: auto-picks up `$SPLITS/lag_matrix.json` if present;
+also auto-loads stage0 encoder weights if `$CACHE/ckpts/stage0` exists
+
+### Expected effect
+Cross-modal CLIP loss should decrease faster because the model is now aligning
+latents that represent the same physical event at its natural causal phase offset —
+smag substorm onset paired with sd convection response 16 min later.
+
+---
+
 ## Outstanding / watch list
 
 - [ ] Confirm NaN-free training for ≥ 500 steps on both machines

@@ -53,4 +53,23 @@ for MOD in sd smag tec dmsp; do
 done
 
 echo "[hdd01-stage0] All modalities complete. Encoder weights in $CKPT_DIR"
-echo "[hdd01-stage0] Now run: bash deploy/scc_hdd01_stage1.sh --ckpt_stage0_dir $CKPT_DIR"
+
+# ------------------------------------------------------------------
+# Causal lag analysis (auto-runs after all encoders are ready)
+# ------------------------------------------------------------------
+echo "[hdd01-stage0] Running causal lag analysis..."
+$PYTHON -u "$IOME_DIR/scripts/analyse_lag.py" \
+    --ckpt_stage0_dir "$CKPT_DIR"             \
+    --splits_dir      "$SPLITS"               \
+    --cache_sd        "$CACHE/superdarn"      \
+    --cache_smag      "$CACHE/supermag"       \
+    --cache_tec       "$CACHE/tec"            \
+    --cache_dmsp      "$CACHE/dmsp"           \
+    --stats_dir       "$SPLITS"              \
+    --out             "$SPLITS/lag_matrix.json" \
+    --max_lag_steps   30                      \
+    --n_samples       5000                    \
+    2>&1 | tee "$LOG_DIR/lag_analysis.log"
+
+echo "[hdd01-stage0] Lag matrix → $SPLITS/lag_matrix.json"
+echo "[hdd01-stage0] Now run: bash deploy/scc_hdd01_stage1.sh"

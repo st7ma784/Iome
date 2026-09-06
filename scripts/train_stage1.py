@@ -52,6 +52,8 @@ def parse_args():
     # Training
     ap.add_argument("--delta_t_steps", type=int, default=8,
                     help="Steps between t and t+delta for temporal CLIP (default 8 = 16 min)")
+    ap.add_argument("--lag_matrix", type=Path, default=None,
+                    help="lag_matrix.json from analyse_lag.py — enables lag-corrected cross-modal CLIP")
     ap.add_argument("--wandb_project", default="iome")
     ap.add_argument("--wandb_entity",  default="st7ma784")
     ap.add_argument("--wandb_name",    default="stage1")
@@ -97,6 +99,12 @@ def main():
     if ts_train is None:
         raise ValueError("Provide --splits_dir or --ts_train")
 
+    lag_matrix = None
+    if args.lag_matrix and Path(args.lag_matrix).exists():
+        lag_json   = json.loads(Path(args.lag_matrix).read_text())
+        lag_matrix = lag_json.get("lag_matrix")   # compact {A->B: steps} dict
+        print(f"Loaded lag matrix: {lag_matrix}")
+
     dm = TriModalDataModule(
         timestamps_train=ts_train,
         timestamps_val=ts_val or ts_train[:2_000],
@@ -115,6 +123,7 @@ def main():
         num_workers=args.num_workers,
         pin_memory=False,
         delta_t_steps=args.delta_t_steps,
+        lag_matrix=lag_matrix,
     )
 
     model  = UnifiedIonosphereModel(latent_dim=args.latent_dim)

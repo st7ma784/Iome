@@ -93,36 +93,42 @@ class Stage1ContrastiveModule(pl.LightningModule):
     # ------------------------------------------------------------------
 
     def _unpack(self, batch):
-        xs        = batch["xs"]
-        ys        = batch["ys"]
-        xs_next   = batch.get("xs_next", {})
-        u         = batch["u"]
-        omni_mask = batch.get("omni_mask", None)
-        return xs, ys, xs_next, u, omni_mask
+        xs          = batch["xs"]
+        ys          = batch["ys"]
+        xs_next     = batch.get("xs_next", {})
+        xs_aligned  = batch.get("xs_aligned", xs)   # lag-corrected; falls back to xs
+        u           = batch["u"]
+        omni_mask   = batch.get("omni_mask", None)
+        return xs, ys, xs_next, xs_aligned, u, omni_mask
 
     def _step(self, batch, p_drop: float):
-        xs, ys, xs_next, u, omni_mask = self._unpack(batch)
+        xs, ys, xs_next, xs_aligned, u, omni_mask = self._unpack(batch)
         decode_mods = tuple(ys.keys())
 
-        out      = self.model(xs,      u, omni_mask, decode_mods=decode_mods, p_mod_drop=p_drop)
-        out_next = self.model(xs_next, u, omni_mask, decode_mods=(), p_mod_drop=0.0)
+        out      = self.model(xs,         u, omni_mask, decode_mods=decode_mods, p_mod_drop=p_drop)
+        out_next = self.model(xs_next,    u, omni_mask, decode_mods=(), p_mod_drop=0.0)
+        # Encode lag-corrected versions for cross-modal CLIP (no dropout — need all mods)
+        out_aln  = self.model(xs_aligned, u, omni_mask, decode_mods=(), p_mod_drop=0.0)
 
-        z_views      = out["z_views"]        # {mod: (B, D)}
-        z_shared     = out["z_shared"]       # (B, D)
-        z_shared_next= out_next["z_shared"]  # (B, D)
+        z_views      = out["z_views"]         # {mod: (B, D)} — from xs (t)
+        z_views_aln  = out_aln["z_views"]     # {mod: (B, D)} — from xs_aligned (t+lag_mod)
+        z_shared     = out["z_shared"]        # (B, D)
+        z_shared_next= out_next["z_shared"]   # (B, D)
 
-        # --- Cross-modal CLIP: align modality pairs at same timestamp ---
+        # --- Cross-modal CLIP on lag-aligned representations ---
+        # z_smag(t) vs z_sd(t+lag_smag→sd): same causal "moment" in the substorm cycle
         l_clip_cross = z_shared.new_tensor(0.0)
         mod_pairs = list(itertools.combinations(
-            [m for m in MODALITIES if m in z_views], 2
+            [m for m in MODALITIES if m in z_views_aln], 2
         ))
         if mod_pairs:
             for m_a, m_b in mod_pairs:
-                l_clip_cross = l_clip_cross + clip_loss(z_views[m_a], z_views[m_b], tau=self.tau)
+                l_clip_cross = l_clip_cross + clip_loss(
+                    z_views_aln[m_a], z_views_aln[m_b], tau=self.tau
+                )
             l_clip_cross = l_clip_cross / len(mod_pairs)
 
-        # --- Temporal CLIP: z_shared_t vs z_shared_{t+delta} should be closer
-        #     than different-timestep pairs (temporal coherence across the window) ---
+        # --- Temporal CLIP: z_shared_t vs z_shared_{t+delta} ---
         l_clip_temp = clip_loss(z_shared, z_shared_next, tau=self.tau)
 
         # --- Reconstruction ---
