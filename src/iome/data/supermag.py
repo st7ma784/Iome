@@ -12,9 +12,7 @@ Grid channels:
   2: soft_occ   — Gaussian-weighted station coverage mask
 """
 
-import io
 import re
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -24,13 +22,6 @@ from torch.utils.data import Dataset
 
 from .grid import mlat_mlt_to_pixel, splat_to_grid, NLAT, NMLT
 
-try:
-    from .luna import get_minio_bytes
-except ImportError:
-    def get_minio_bytes(**_):
-        raise RuntimeError("minio not installed; set cache_dir instead")
-
-BUCKET  = "supermag-data"
 N_CHANS = 3
 
 
@@ -99,7 +90,7 @@ class SuperMAGDataset(Dataset):
     """
     Args:
         timestamps:    sorted list of "YYYY-MM-DDTHH:MM" strings
-        cache_dir:     local .npy cache directory (optional)
+        cache_dir:     local .npy cache directory
         stats:         {"mean": (3,), "std": (3,)} normalisation
         delta_t_steps: steps between xs and xs_next
     """
@@ -107,22 +98,13 @@ class SuperMAGDataset(Dataset):
     def __init__(
         self,
         timestamps: list[str],
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path,
         stats: Optional[dict] = None,
-        minio_endpoint: str = "localhost:9000",
-        minio_access_key: str = "minioadmin",
-        minio_secret_key: str = "minioadmin",
         delta_t_steps: int = 1,
     ):
         self.timestamps    = timestamps
-        self.cache_dir     = Path(cache_dir) if cache_dir else None
+        self.cache_dir     = Path(cache_dir)
         self.stats         = stats
-        self.minio_cfg     = dict(
-            bucket=BUCKET,
-            endpoint=minio_endpoint,
-            access_key=minio_access_key,
-            secret_key=minio_secret_key,
-        )
         self.delta_t_steps = delta_t_steps
         self._valid = list(range(len(timestamps) - delta_t_steps))
 
@@ -139,20 +121,16 @@ class SuperMAGDataset(Dataset):
 
     def _load(self, ts: str) -> torch.Tensor:
         fname = ts.replace(":", "").replace("-", "") + "_smag.npy"
-        if self.cache_dir:
-            p = self.cache_dir / fname
-            if p.exists():
-                try:
-                    grid = np.load(p, mmap_mode="r")
-                    if grid.shape != (3, NLAT, NMLT):
-                        raise ValueError(f"unexpected shape {grid.shape}")
-                    return self._normalise(grid)
-                except Exception:
-                    return torch.zeros(3, NLAT, NMLT)
-
-        raw  = get_minio_bytes(**self.minio_cfg, obj_name=fname)
-        grid = np.load(io.BytesIO(raw))
-        return self._normalise(grid)
+        p = self.cache_dir / fname
+        if p.exists():
+            try:
+                grid = np.load(p, mmap_mode="r")
+                if grid.shape != (3, NLAT, NMLT):
+                    raise ValueError(f"unexpected shape {grid.shape}")
+                return self._normalise(grid)
+            except Exception:
+                return torch.zeros(3, NLAT, NMLT)
+        return torch.zeros(3, NLAT, NMLT)
 
     def _normalise(self, grid: np.ndarray) -> torch.Tensor:
         grid = grid.astype(np.float32)

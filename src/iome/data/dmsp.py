@@ -36,12 +36,12 @@ class DMSPDataset(Dataset):
     def __init__(
         self,
         timestamps: list[str],
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path,
         stats: Optional[dict] = None,
         delta_t_steps: int = 1,
     ):
         self.timestamps    = timestamps
-        self.cache_dir     = Path(cache_dir) if cache_dir else None
+        self.cache_dir     = Path(cache_dir)
         self.stats         = stats
         self.delta_t_steps = delta_t_steps
         self._valid        = list(range(len(timestamps) - delta_t_steps))
@@ -57,16 +57,15 @@ class DMSPDataset(Dataset):
 
     def _load(self, ts: str) -> torch.Tensor:
         fname = ts.replace("-", "").replace(":", "") + "_dmsp.npy"
-        if self.cache_dir:
-            p = self.cache_dir / fname
-            if p.exists():
-                try:
-                    grid = np.load(p, mmap_mode="r").astype(np.float32)
-                    if grid.shape != (N_CHANS, NLAT, NMLT):
-                        raise ValueError(f"unexpected shape {grid.shape}")
-                    return self._normalise(grid)
-                except Exception:
-                    return self._normalise(np.zeros((N_CHANS, NLAT, NMLT), dtype=np.float32))
+        p = self.cache_dir / fname
+        if p.exists():
+            try:
+                grid = np.load(p, mmap_mode="r").astype(np.float32)
+                if grid.shape != (N_CHANS, NLAT, NMLT):
+                    raise ValueError(f"unexpected shape {grid.shape}")
+                return self._normalise(grid)
+            except Exception:
+                return self._normalise(np.zeros((N_CHANS, NLAT, NMLT), dtype=np.float32))
         return self._normalise(np.zeros((N_CHANS, NLAT, NMLT), dtype=np.float32))
 
     def _normalise(self, grid: np.ndarray) -> torch.Tensor:
