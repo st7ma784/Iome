@@ -121,7 +121,7 @@ def main():
     nw = args.num_workers
     loader_kwargs = dict(num_workers=nw, pin_memory=False)
     if nw > 0:
-        loader_kwargs["multiprocessing_context"] = "forkserver"
+        loader_kwargs["multiprocessing_context"] = "fork"   # forkserver deadlocks on hdd01
         loader_kwargs["persistent_workers"] = True
     dl_train = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True,  **loader_kwargs)
     dl_val   = DataLoader(ds_val,   batch_size=args.batch_size, shuffle=False, **loader_kwargs)
