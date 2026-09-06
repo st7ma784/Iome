@@ -103,6 +103,82 @@ Both runs include post-fix code: corrected InfoNCE, grad clip=1.0, BCE occ, NaN 
 
 ---
 
+## 2026-09-06 — Training curriculum redesign: Phase 0 + revised Phase 1
+
+### Symptom
+Runs plateau quickly across all modalities. `recon_smag` and `recon_tec`
+never meaningfully drop below the predict-zero baseline (~0.75).
+
+### Root cause: temporal scale mismatch
+The magnetospheric cause-effect chain (solar wind → substorm onset → convection
+response → TEC enhancement) unfolds over 20–60 minutes. At 2-minute cadence,
+a single snapshot sits in the middle of this chain with no causal context.
+The model cannot learn that SuperMAG dBn and SuperDARN vlos are linked because
+the substorm onset (visible in smag) precedes the convection response (visible
+in sd) by 10–30 minutes — never in the same frame. Encoders plateau at
+mean-field patterns because that is all a single snapshot supports.
+
+### On CE vs InfoNCE for this problem
+`CE(z @ z.T / τ, arange(B))` (NT-Xent / CLIP formulation) is preferred here
+because:
+1. The softmax competition is over all B−1 negatives simultaneously — sharper
+   gradients than sequential InfoNCE terms.
+2. CE loss landscape encourages discrete, compositional representations
+   (the grokking intuition — model learns to classify states rather than
+   interpolate between them). This matters for learning a posterior over
+   ionospheric states, which are driven by discrete physical regimes
+   (quiet, substorm, storm).
+3. The identity-matrix target is exact: each sample should be most similar
+   to itself and dissimilar from all others in the batch.
+
+### Revised curriculum
+
+**Phase 0 (new): per-modality self-supervised pretraining**
+- Train each encoder independently on its own data stream.
+- Positive pairs: snapshot at t and snapshot at t+k, k ∈ [1, 15] steps (2–30 min).
+  Near timesteps represent similar ionospheric states.
+- Loss: symmetric CLIP, `CE(z_a @ z_b.T / 0.07, arange(B))`.
+- Projection head (2-layer MLP, 256→512→128) sits above encoder during
+  pretraining; discarded afterwards. Only encoder weights saved.
+- Teaches each encoder to produce distinctive state embeddings from its own
+  data alone. No cross-modal alignment needed yet.
+- 20k steps per modality (~2 hours on hdd01 CPU).
+
+**Phase 1 (updated): cross-modal alignment with wider temporal context**
+- Load Phase 0 encoder weights.
+- `delta_t_steps=8` (16 min) instead of 1 (2 min) — positive pair spans enough
+  time for cause-effect to manifest across modalities.
+- Cross-modal CLIP: `CE(z_sd @ z_smag.T / τ, arange)` for all modality pairs
+  at the same timestamp. Same-timestamp embeddings of different sensors should
+  agree on ionospheric state.
+- Temporal CLIP: `CE(z_shared_t @ z_shared_{t+delta}.T / τ, arange)` — nearby
+  states should be more similar than distant ones.
+- Reconstruction retained as secondary signal (λ=0.5).
+- Variance regularisation retained (λ=0.04).
+
+### Relevant prior work
+- **CPC** (van den Oord 2018): predicts future latents from past sequence via
+  InfoNCE. Most directly related to the "learn a posterior over future states"
+  framing.
+- **CLIP** (Radford 2021): CE cross-modal alignment, the exact loss used here.
+- **Dreamer v3** (Hafner 2023): discrete latent world model trained with CE
+  — the grokking-toward-underlying-physics intuition.
+- **MoCo v3**: momentum encoder for larger effective negative batch without
+  memory cost. Relevant if batch stays constrained at 1–4.
+
+### New files
+- `src/iome/data/pairs.py` — `TemporalPairDataset` wrapper
+- `src/iome/models/losses.py` — `clip_loss(z_a, z_b, tau)` added
+- `src/iome/train/stage0.py` — `Stage0ModalityModule` + `ProjectionHead`
+- `scripts/train_stage0.py` — per-modality pretraining entry point
+- `deploy/scc_hdd01_stage0.sh` — sequential 4-modality run on hdd01
+
+### Modified files
+- `src/iome/train/stage1.py` — cross-modal CLIP, temporal CLIP, loads stage0 weights
+- `scripts/train_stage1.py` — `--ckpt_stage0_dir`, `--delta_t_steps` args
+
+---
+
 ## Outstanding / watch list
 
 - [ ] Confirm NaN-free training for ≥ 500 steps on both machines

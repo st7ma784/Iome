@@ -19,6 +19,36 @@ RECON_WEIGHTS = {"sd": 1.0, "smag": 0.8, "tec": 0.6, "dmsp": 0.7}
 
 
 # ---------------------------------------------------------------------------
+# CLIP / NT-Xent symmetric cross-entropy loss
+# ---------------------------------------------------------------------------
+
+def clip_loss(
+    z_a: torch.Tensor,
+    z_b: torch.Tensor,
+    tau: float = 0.07,
+) -> torch.Tensor:
+    """
+    Symmetric CLIP / NT-Xent loss.
+
+    Each sample is its own positive; all other samples in the batch are negatives.
+    CE(z_a @ z_b.T / τ, arange(B)) — diagonal of the similarity matrix is the
+    ground-truth class for each row.
+
+    Normalisation is applied here so callers can pass raw projector outputs.
+
+    Returns 0 when B < 2 (no negatives to contrast against).
+    """
+    B = z_a.shape[0]
+    if B < 2:
+        return z_a.new_tensor(0.0)
+    z_a = F.normalize(z_a, dim=1)
+    z_b = F.normalize(z_b, dim=1)
+    logits = z_a @ z_b.T / tau                              # (B, B)
+    labels = torch.arange(B, device=z_a.device)
+    return (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)) / 2
+
+
+# ---------------------------------------------------------------------------
 # InfoNCE contrastive loss
 # ---------------------------------------------------------------------------
 

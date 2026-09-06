@@ -46,8 +46,12 @@ def parse_args():
     ap.add_argument("--stats_dir",   type=Path, default=None,
                     help="Directory with stats_{mod}.npy files")
     ap.add_argument("--omni_dir",    type=Path, default=None)
-    ap.add_argument("--ckpt_dir",    type=Path, required=True)
+    ap.add_argument("--ckpt_dir",        type=Path, required=True)
+    ap.add_argument("--ckpt_stage0_dir", type=Path, default=None,
+                    help="Directory of stage0_{mod}_encoder.pt files from train_stage0.py")
     # Training
+    ap.add_argument("--delta_t_steps", type=int, default=8,
+                    help="Steps between t and t+delta for temporal CLIP (default 8 = 16 min)")
     ap.add_argument("--wandb_project", default="iome")
     ap.add_argument("--wandb_entity",  default="st7ma784")
     ap.add_argument("--wandb_name",    default="stage1")
@@ -110,11 +114,13 @@ def main():
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=False,
+        delta_t_steps=args.delta_t_steps,
     )
 
     model  = UnifiedIonosphereModel(latent_dim=args.latent_dim)
     module = Stage1ContrastiveModule(
         model=model,
+        ckpt_stage0_dir=args.ckpt_stage0_dir,
         lr=args.lr,
         tau=args.tau,
         lambda_recon=args.lambda_recon,
