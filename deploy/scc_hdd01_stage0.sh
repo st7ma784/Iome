@@ -44,7 +44,7 @@ for MOD in sd smag tec dmsp; do
         --precision   32                 \
         --batch_size  32                 \
         --max_steps   20000              \
-        --num_workers 4                  \
+        --num_workers 0                  \
         --window_steps 15                \
         --tau         0.07               \
         --lr          1e-3               \
